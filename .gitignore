@@ -28,6 +28,10 @@ go.work.sum
 # env file
 .env
 
+# Local SQLite database files
+*.db
+*.db-*
+
 # Editor/IDE
 # .idea/
 # .vscode/

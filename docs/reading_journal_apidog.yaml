@@ -1,0 +1,1277 @@
+openapi: 3.0.3
+info:
+  title: Reading Journal API
+  version: 1.0.0
+  description: |-
+    API for the Reading Journal Flutter application. Import this OpenAPI file into Apidog.
+    Business routes are under /api/v1; GET /health is at the server root. Dates use YYYY-MM-DD and timestamps use ISO 8601.
+    Private resources are scoped to the authenticated user. Send the access token as a Bearer token.
+
+    MVP decisions: user-created books are visible only to their creator; removing a library book
+    with sessions, notes, or a review returns 409; reading logs do not update session progress;
+    PAGES goals sum the pages recorded in logs, counting overlapping ranges and rereads.
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local Go server
+  - url: http://10.0.2.2:8080/api/v1
+    description: Android emulator accessing the host machine
+security:
+  - bearerAuth: []
+tags:
+  - name: System
+    description: Service health
+  - name: Auth
+    description: Account registration, login, and password management
+  - name: Users
+    description: Current account profile
+  - name: Books
+    description: Catalog search and book records
+  - name: My Library
+    description: The authenticated user's personal library
+  - name: Reading Sessions
+    description: Reading sessions, progress, and completion
+  - name: Reading Logs
+    description: Daily reading log entries
+  - name: Notes and Reviews
+    description: Private notes and reviews for library books
+  - name: Goals
+    description: Reading goal management and progress
+  - name: Dashboard
+    description: Dashboard and aggregate reading statistics
+paths:
+  /health:
+    servers:
+      - url: http://localhost:8080
+        description: Local Go server
+      - url: http://10.0.2.2:8080
+        description: Android emulator accessing the host machine
+    get:
+      tags: [System]
+      operationId: healthCheck
+      summary: Check server health
+      security: []
+      responses:
+        '200':
+          description: Server is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthEnvelope'
+  /auth/register:
+    post:
+      tags: [Auth]
+      operationId: register
+      summary: Register a user
+      description: Creates a user and returns a signed access token. Email is normalized to lowercase.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              username: Minh
+              email: minh@example.com
+              password: MatKhauManh123!
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/ServerError'}
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Sign in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: minh@example.com
+              password: MatKhauManh123!
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/ServerError'}
+  /auth/change-password:
+    patch:
+      tags: [Auth]
+      operationId: changePassword
+      summary: Change password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+            example:
+              current_password: MatKhauCu123!
+              new_password: MatKhauMoi123!
+      responses:
+        '200':
+          description: Password changed; previously issued access tokens are invalidated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/ServerError'}
+  /users/me:
+    get:
+      tags: [Users]
+      operationId: getCurrentUser
+      summary: Get current user's profile
+      responses:
+        '200':
+          description: Current profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserEnvelope'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/ServerError'}
+    patch:
+      tags: [Users]
+      operationId: updateCurrentUser
+      summary: Change display name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+      responses:
+        '200':
+          description: Updated profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/ServerError'}
+  /books:
+    get:
+      tags: [Books]
+      operationId: searchBooks
+      summary: Search the shared catalog and the caller's own books
+      description: Common books are public. Private books created by other users are omitted. Authentication is optional.
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - in: query
+          name: search
+          schema: {type: string}
+          description: Matches title, author, or ISBN
+        - in: query
+          name: category_name
+          schema: {type: string, maxLength: 100}
+          description: Exact category-name match, case-insensitive
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Paginated book catalog
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookListEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '500': {$ref: '#/components/responses/ServerError'}
+    post:
+      tags: [Books]
+      operationId: createBook
+      summary: Create a private book record
+      description: Creates a book record only. Use POST /me/books/new to also add it to the personal library.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookRequest'
+            example:
+              title: Đắc Nhân Tâm
+              author: Dale Carnegie
+              category_name: Kỹ năng sống
+              total_pages: 320
+              description: Sách kỹ năng giao tiếp
+              cover_url: null
+              publisher: null
+              published_year: null
+              isbn: null
+      responses:
+        '201':
+          description: Book created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/ServerError'}
+  /books/{book_id}:
+    parameters:
+      - {$ref: '#/components/parameters/BookID'}
+    get:
+      tags: [Books]
+      operationId: getBook
+      summary: Get a book by ID
+      description: Common books and the caller's own private books are visible. Authentication is optional.
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        '200':
+          description: Book details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/ServerError'}
+    patch:
+      tags: [Books]
+      operationId: updateBook
+      summary: Update a book created by the caller
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookPatchRequest'
+      responses:
+        '200':
+          description: Updated book
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/ServerError'}
+  /me/books:
+    get:
+      tags: [My Library]
+      operationId: listMyBooks
+      summary: List the authenticated user's library
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [WANT_TO_READ, READING, COMPLETED]
+        - in: query
+          name: favorite
+          schema: {type: boolean}
+        - in: query
+          name: search
+          schema: {type: string}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Paginated personal library with current progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryListEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/ServerError'}
+    post:
+      tags: [My Library]
+      operationId: addBookToLibrary
+      summary: Add an existing catalog book to the library
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [book_id]
+              properties:
+                book_id: {type: integer, format: int64, minimum: 1}
+            example: {book_id: 10}
+      responses:
+        '201':
+          description: Book added with WANT_TO_READ status and is_favorite false
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryBookEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/ServerError'}
+  /me/books/new:
+    post:
+      tags: [My Library]
+      operationId: createBookInLibrary
+      summary: Create a private book and add it to the library
+      description: Book and user_books rows are created in one transaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookRequest'
+      responses:
+        '201':
+          description: Created book in the personal library
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryBookEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/ServerError'}
+  /me/books/{user_book_id}:
+    parameters:
+      - {$ref: '#/components/parameters/UserBookID'}
+    get:
+      tags: [My Library]
+      operationId: getMyBook
+      summary: Get a book from the personal library
+      responses:
+        '200':
+          description: Library book and reading progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryBookEnvelope'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      tags: [My Library]
+      operationId: updateBookFavorite
+      summary: Set favorite state
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_favorite]
+              properties:
+                is_favorite: {type: boolean}
+      responses:
+        '200':
+          description: Updated library book
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryBookEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [My Library]
+      operationId: removeBookFromLibrary
+      summary: Remove a book with no reading history
+      responses:
+        '204': {description: Removed}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /me/books/{user_book_id}/sessions:
+    parameters:
+      - {$ref: '#/components/parameters/UserBookID'}
+    get:
+      tags: [Reading Sessions]
+      operationId: listReadingSessions
+      summary: Get reading history for a library book
+      responses:
+        '200':
+          description: Reading sessions, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionListEnvelope'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      tags: [Reading Sessions]
+      operationId: startReadingSession
+      summary: Start or continue reading
+      description: Returns the existing active session if one already exists; otherwise creates the next session number.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                start_date: {type: string, format: date}
+      responses:
+        '200':
+          description: Existing active session returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '201':
+          description: New session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /sessions/{session_id}/progress:
+    parameters:
+      - {$ref: '#/components/parameters/SessionID'}
+    patch:
+      tags: [Reading Sessions]
+      operationId: updateReadingProgress
+      summary: Update current page
+      description: Page must be between zero and the book's total_pages. Reaching the last page does not complete the session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_page]
+              properties:
+                current_page: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: Updated progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /sessions/{session_id}/complete:
+    parameters:
+      - {$ref: '#/components/parameters/SessionID'}
+    post:
+      tags: [Reading Sessions]
+      operationId: completeReadingSession
+      summary: Complete a reading session
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                end_date: {type: string, format: date}
+      responses:
+        '200':
+          description: Session completed and library status synchronized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /reading-logs:
+    get:
+      tags: [Reading Logs]
+      operationId: listReadingLogs
+      summary: List the current user's reading logs
+      parameters:
+        - in: query
+          name: session_id
+          schema: {type: integer, format: int64}
+        - in: query
+          name: from_date
+          schema: {type: string, format: date}
+        - in: query
+          name: to_date
+          schema: {type: string, format: date}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Paginated reading logs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogListEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [Reading Logs]
+      operationId: createReadingLog
+      summary: Create a reading log
+      description: Does not update reading session current_page.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReadingLogRequest'
+            example:
+              session_id: 31
+              read_date: '2026-10-11'
+              start_page: 26
+              end_page: 45
+              content: Chương này rất thú vị.
+      responses:
+        '201':
+          description: Log created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /reading-logs/{log_id}:
+    parameters:
+      - {$ref: '#/components/parameters/LogID'}
+    get:
+      tags: [Reading Logs]
+      operationId: getReadingLog
+      summary: Get a reading log
+      responses:
+        '200':
+          description: Reading log
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogEnvelope'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      tags: [Reading Logs]
+      operationId: updateReadingLog
+      summary: Update a reading log
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReadingLogPatchRequest'
+      responses:
+        '200':
+          description: Updated reading log
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Reading Logs]
+      operationId: deleteReadingLog
+      summary: Delete a reading log
+      responses:
+        '204': {description: Deleted}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /me/books/{user_book_id}/notes:
+    parameters:
+      - {$ref: '#/components/parameters/UserBookID'}
+    get:
+      tags: [Notes and Reviews]
+      operationId: listBookNotes
+      summary: List notes for a library book
+      responses:
+        '200':
+          description: Notes ordered newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteListEnvelope'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      tags: [Notes and Reviews]
+      operationId: createBookNote
+      summary: Add a note
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteRequest'
+      responses:
+        '201':
+          description: Note created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /notes/{note_id}:
+    parameters:
+      - {$ref: '#/components/parameters/NoteID'}
+    patch:
+      tags: [Notes and Reviews]
+      operationId: updateBookNote
+      summary: Update a note
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotePatchRequest'
+      responses:
+        '200':
+          description: Updated note
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Notes and Reviews]
+      operationId: deleteBookNote
+      summary: Delete a note
+      responses:
+        '204': {description: Deleted}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /me/books/{user_book_id}/review:
+    parameters:
+      - {$ref: '#/components/parameters/UserBookID'}
+    get:
+      tags: [Notes and Reviews]
+      operationId: getBookReview
+      summary: Get the current user's review
+      description: Returns data null when no review exists yet.
+      responses:
+        '200':
+          description: Review or null
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewEnvelope'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      tags: [Notes and Reviews]
+      operationId: upsertBookReview
+      summary: Create or replace a review
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewRequest'
+      responses:
+        '200':
+          description: Saved review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Notes and Reviews]
+      operationId: deleteBookReview
+      summary: Delete a review
+      responses:
+        '204': {description: Deleted}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /goals:
+    get:
+      tags: [Goals]
+      operationId: listGoals
+      summary: List reading goals with calculated progress
+      parameters:
+        - in: query
+          name: goal_type
+          schema:
+            type: string
+            enum: [BOOKS, PAGES]
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Paginated goals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalListEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [Goals]
+      operationId: createGoal
+      summary: Create a reading goal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalRequest'
+            example:
+              goal_name: Đọc 10 cuốn trong học kỳ
+              goal_type: BOOKS
+              target_value: 10
+              start_date: '2026-10-01'
+              end_date: '2027-01-31'
+      responses:
+        '201':
+          description: Goal created with calculated progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /goals/{goal_id}:
+    parameters:
+      - {$ref: '#/components/parameters/GoalID'}
+    get:
+      tags: [Goals]
+      operationId: getGoal
+      summary: Get a goal and its progress
+      responses:
+        '200':
+          description: Goal details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalEnvelope'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      tags: [Goals]
+      operationId: updateGoal
+      summary: Update a goal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalPatchRequest'
+      responses:
+        '200':
+          description: Updated goal and progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Goals]
+      operationId: deleteGoal
+      summary: Delete a goal
+      responses:
+        '204': {description: Deleted}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /dashboard:
+    get:
+      tags: [Dashboard]
+      operationId: getDashboard
+      summary: Get dashboard summary
+      responses:
+        '200':
+          description: Statistics and up to five active reading books
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardEnvelope'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/ServerError'}
+  /statistics:
+    get:
+      tags: [Dashboard]
+      operationId: getStatistics
+      summary: Get reading statistics
+      parameters:
+        - in: query
+          name: from_date
+          schema: {type: string, format: date}
+        - in: query
+          name: to_date
+          schema: {type: string, format: date}
+      responses:
+        '200':
+          description: Aggregate statistics for the current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatisticsEnvelope'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/ServerError'}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Page:
+      in: query
+      name: page
+      schema: {type: integer, minimum: 1, default: 1}
+    Limit:
+      in: query
+      name: limit
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+    BookID:
+      in: path
+      name: book_id
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    UserBookID:
+      in: path
+      name: user_book_id
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    SessionID:
+      in: path
+      name: session_id
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    LogID:
+      in: path
+      name: log_id
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    NoteID:
+      in: path
+      name: note_id
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    GoalID:
+      in: path
+      name: goal_id
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+  responses:
+    BadRequest:
+      description: Invalid input
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Unauthorized:
+      description: Missing, invalid, or expired access token
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Forbidden:
+      description: The caller does not own this resource
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    NotFound:
+      description: Resource not found or not owned by the caller
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Conflict:
+      description: Duplicate or conflicting state
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    ServerError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+  schemas:
+    RegisterRequest:
+      type: object
+      required: [username, email, password]
+      properties:
+        username: {type: string, minLength: 1, maxLength: 100}
+        email: {type: string, format: email, maxLength: 254}
+        password: {type: string, minLength: 8, maxLength: 72, description: Maximum is 72 UTF-8 bytes}
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string, minLength: 1}
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password: {type: string}
+        new_password: {type: string, minLength: 8, maxLength: 72}
+    UpdateProfileRequest:
+      type: object
+      required: [username]
+      properties:
+        username: {type: string, minLength: 1, maxLength: 100}
+    User:
+      type: object
+      required: [user_id, username, email]
+      properties:
+        user_id: {type: integer, format: int64}
+        username: {type: string}
+        email: {type: string, format: email}
+    AuthData:
+      type: object
+      properties:
+        access_token: {type: string}
+        token_type: {type: string, example: Bearer}
+        user: {$ref: '#/components/schemas/User'}
+    BookRequest:
+      type: object
+      required: [title, author, total_pages]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 255}
+        category_name: {type: string, maxLength: 100, nullable: true}
+        author: {type: string, minLength: 1, maxLength: 255}
+        total_pages: {type: integer, minimum: 1}
+        cover_url: {type: string, format: uri, nullable: true}
+        description: {type: string}
+        publisher: {type: string, nullable: true}
+        published_year: {type: integer, nullable: true}
+        isbn: {type: string, nullable: true}
+    BookPatchRequest:
+      type: object
+      minProperties: 1
+      description: Send null to clear nullable fields. Empty strings also clear nullable text fields.
+      properties:
+        category_name: {type: string, maxLength: 100, nullable: true}
+        title: {type: string, minLength: 1}
+        author: {type: string}
+        total_pages: {type: integer, minimum: 1}
+        cover_url: {type: string, nullable: true}
+        description: {type: string}
+        publisher: {type: string, nullable: true}
+        published_year: {type: integer, nullable: true}
+        isbn: {type: string, nullable: true}
+    Book:
+      allOf:
+        - $ref: '#/components/schemas/BookRequest'
+        - type: object
+          properties:
+            book_id: {type: integer, format: int64}
+            created_by: {type: integer, format: int64, nullable: true}
+            created_at: {type: string, format: date-time}
+    LibraryBook:
+      type: object
+      properties:
+        user_book_id: {type: integer, format: int64}
+        book_id: {type: integer, format: int64}
+        title: {type: string}
+        author: {type: string}
+        category_name: {type: string, maxLength: 100, nullable: true}
+        cover_url: {type: string, nullable: true}
+        total_pages: {type: integer}
+        status: {type: string, enum: [WANT_TO_READ, READING, COMPLETED]}
+        is_favorite: {type: boolean}
+        current_page: {type: integer}
+        active_session_id: {type: integer, format: int64, nullable: true}
+        progress_percent: {type: number, format: double}
+    ReadingSession:
+      type: object
+      properties:
+        session_id: {type: integer, format: int64}
+        user_book_id: {type: integer, format: int64}
+        session_number: {type: integer}
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date, nullable: true}
+        current_page: {type: integer}
+        total_pages: {type: integer}
+        status: {type: string, enum: [READING, COMPLETED]}
+        progress_percent: {type: number, format: double}
+    ReadingLogRequest:
+      type: object
+      required: [session_id, read_date, start_page, end_page]
+      properties:
+        session_id: {type: integer, format: int64}
+        read_date: {type: string, format: date}
+        start_page: {type: integer, minimum: 1}
+        end_page: {type: integer, minimum: 1}
+        content: {type: string, nullable: true}
+    ReadingLogPatchRequest:
+      type: object
+      minProperties: 1
+      description: Send null or an empty string for content to clear it.
+      properties:
+        read_date: {type: string, format: date}
+        start_page: {type: integer, minimum: 1}
+        end_page: {type: integer, minimum: 1}
+        content: {type: string, nullable: true}
+    ReadingLog:
+      allOf:
+        - $ref: '#/components/schemas/ReadingLogRequest'
+        - type: object
+          properties:
+            log_id: {type: integer, format: int64}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}
+    NoteRequest:
+      type: object
+      required: [content]
+      properties:
+        page_number: {type: integer, minimum: 1, nullable: true}
+        content: {type: string, minLength: 1}
+    NotePatchRequest:
+      type: object
+      minProperties: 1
+      properties:
+        page_number: {type: integer, minimum: 1, nullable: true, description: Send null to remove the page reference}
+        content: {type: string, minLength: 1}
+    Note:
+      allOf:
+        - $ref: '#/components/schemas/NoteRequest'
+        - type: object
+          properties:
+            note_id: {type: integer, format: int64}
+            user_book_id: {type: integer, format: int64}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}
+    ReviewRequest:
+      type: object
+      required: [rating]
+      properties:
+        rating: {type: integer, minimum: 1, maximum: 5}
+        comment: {type: string, nullable: true}
+    Review:
+      allOf:
+        - $ref: '#/components/schemas/ReviewRequest'
+        - type: object
+          properties:
+            review_id: {type: integer, format: int64}
+            user_book_id: {type: integer, format: int64}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}
+    GoalRequest:
+      type: object
+      required: [goal_name, goal_type, target_value, start_date, end_date]
+      properties:
+        goal_name: {type: string, minLength: 1}
+        goal_type: {type: string, enum: [BOOKS, PAGES]}
+        target_value: {type: integer, minimum: 1}
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date}
+    GoalPatchRequest:
+      type: object
+      minProperties: 1
+      properties:
+        goal_name: {type: string, minLength: 1}
+        goal_type: {type: string, enum: [BOOKS, PAGES]}
+        target_value: {type: integer, minimum: 1}
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date}
+    Goal:
+      allOf:
+        - $ref: '#/components/schemas/GoalRequest'
+        - type: object
+          properties:
+            goal_id: {type: integer, format: int64}
+            current_value: {type: integer, format: int64}
+            progress_percent: {type: number, format: double}
+            is_completed: {type: boolean}
+            created_at: {type: string, format: date-time}
+    Statistics:
+      type: object
+      properties:
+        total_books: {type: integer, format: int64}
+        want_to_read_books: {type: integer, format: int64}
+        reading_books: {type: integer, format: int64}
+        completed_books: {type: integer, format: int64}
+        total_pages_read: {type: integer, format: int64}
+        total_reading_logs: {type: integer, format: int64}
+        completed_goals: {type: integer, format: int64}
+    Pagination:
+      type: object
+      properties:
+        page: {type: integer}
+        limit: {type: integer}
+        total: {type: integer, format: int64}
+    SuccessBase:
+      type: object
+      required: [success]
+      properties:
+        success: {type: boolean, enum: [true]}
+        message: {type: string}
+    HealthEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [status]
+              properties:
+                status: {type: string, enum: [ok]}
+    ErrorEnvelope:
+      type: object
+      required: [success, error]
+      properties:
+        success: {type: boolean, enum: [false]}
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            details: {type: object, additionalProperties: true}
+    AuthEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/AuthData'}
+    UserEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/User'}
+    BookEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Book'}
+    BookListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: {$ref: '#/components/schemas/Book'}
+            pagination: {$ref: '#/components/schemas/Pagination'}
+    LibraryBookEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/LibraryBook'}
+    LibraryListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: {$ref: '#/components/schemas/LibraryBook'}
+            pagination: {$ref: '#/components/schemas/Pagination'}
+    SessionEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/ReadingSession'}
+    SessionListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: {$ref: '#/components/schemas/ReadingSession'}
+    LogEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/ReadingLog'}
+    LogListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: {$ref: '#/components/schemas/ReadingLog'}
+            pagination: {$ref: '#/components/schemas/Pagination'}
+    NoteEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Note'}
+    NoteListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: {$ref: '#/components/schemas/Note'}
+    ReviewEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              nullable: true
+              allOf:
+                - $ref: '#/components/schemas/Review'
+    GoalEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Goal'}
+    GoalListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: {$ref: '#/components/schemas/Goal'}
+            pagination: {$ref: '#/components/schemas/Pagination'}
+    StatisticsEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Statistics'}
+    DashboardEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                statistics: {$ref: '#/components/schemas/Statistics'}
+                current_reading:
+                  type: array
+                  items: {$ref: '#/components/schemas/LibraryBook'}
+    MessageEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessBase'
+        - type: object
+          properties:
+            data: {type: object, nullable: true}
