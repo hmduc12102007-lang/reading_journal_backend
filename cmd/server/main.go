@@ -1,24 +1,23 @@
 package main
 
 import (
-	"errors"
 	"log"
-	"net/http"
+	"os"
 
 	"reading_journal_backend/internal/auth"
 	"reading_journal_backend/internal/config"
 	"reading_journal_backend/internal/database"
 	"reading_journal_backend/internal/handlers"
 	"reading_journal_backend/internal/routes"
-
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
 )
 
 func main() {
 	cfg := config.Load()
 	if len(cfg.JWTSecret) < 32 {
 		log.Fatal("JWT_SECRET must be at least 32 characters")
+	}
+	if err := os.MkdirAll(cfg.UploadDir, 0700); err != nil {
+		log.Fatalf("create image storage: %v", err)
 	}
 
 	db, err := database.Connect(cfg)
@@ -30,39 +29,10 @@ func main() {
 		log.Fatalf("migrate database: %v", err)
 	}
 
-	e := echo.New()
-	e.HideBanner = true
-	e.HTTPErrorHandler = func(err error, c echo.Context) {
-		if c.Response().Committed {
-			return
-		}
-		status := http.StatusInternalServerError
-		var httpError *echo.HTTPError
-		if errors.As(err, &httpError) {
-			status = httpError.Code
-		}
-		code := "INTERNAL_ERROR"
-		message := "Internal server error"
-		if status == http.StatusNotFound {
-			code, message = "NOT_FOUND", "Resource not found"
-		} else if status == http.StatusMethodNotAllowed {
-			code, message = "METHOD_NOT_ALLOWED", "Method not allowed"
-		}
-		_ = c.JSON(status, echo.Map{"success": false, "error": echo.Map{"code": code, "message": message}})
-	}
-	e.Use(middleware.Logger())
-	e.Use(middleware.Recover())
-	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowHeaders: []string{
-			echo.HeaderOrigin,
-			echo.HeaderContentType,
-			echo.HeaderAccept,
-			echo.HeaderAuthorization,
-		},
-	}))
+	e := newHTTPServer()
 
 	authHandler := handlers.NewAuthHandler(db, cfg.JWTSecret)
-	bookHandler := handlers.NewBookHandler(db)
+	bookHandler := handlers.NewBookHandler(db, cfg.UploadDir)
 	readingHandler := handlers.NewReadingHandler(db)
 	notesReviewsHandler := handlers.NewNotesReviewsHandler(db)
 	goalHandler := handlers.NewGoalHandler(db)

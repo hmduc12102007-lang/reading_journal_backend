@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"reading_journal_backend/internal/models"
 
@@ -103,7 +104,7 @@ func (h *GoalHandler) Get(c echo.Context) error {
 	}
 	var goal models.ReadingGoal
 	if err := h.db.Where("goal_id = ? AND user_id = ?", goalID, userID).First(&goal).Error; err != nil {
-		return apiError(c, http.StatusNotFound, "NOT_FOUND", "Goal not found", nil)
+		return lookupError(c, err, "Goal not found", "Failed to load goal")
 	}
 	item, err := h.withProgress(userID, goal)
 	if err != nil {
@@ -146,7 +147,7 @@ func (h *GoalHandler) Update(c echo.Context) error {
 	}
 	var goal models.ReadingGoal
 	if err := h.db.Where("goal_id = ? AND user_id = ?", goalID, userID).First(&goal).Error; err != nil {
-		return apiError(c, http.StatusNotFound, "NOT_FOUND", "Goal not found", nil)
+		return lookupError(c, err, "Goal not found", "Failed to load goal")
 	}
 	var req GoalPatchRequest
 	if err := c.Bind(&req); err != nil {
@@ -157,7 +158,7 @@ func (h *GoalHandler) Update(c echo.Context) error {
 	}
 	updated := goal
 	if req.GoalName != nil {
-		updated.GoalName = *req.GoalName
+		updated.GoalName = strings.TrimSpace(*req.GoalName)
 	}
 	if req.GoalType != nil {
 		updated.GoalType = *req.GoalType
@@ -227,7 +228,7 @@ func (h *GoalHandler) Dashboard(c echo.Context) error {
 		return apiError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load dashboard", nil)
 	}
 	reading := make([]LibraryBook, 0, 5)
-	if err := h.db.Table("user_books AS ub").Select("ub.user_book_id, b.book_id, b.title, b.author, b.category_name, b.cover_url, b.total_pages, ub.status, ub.is_favorite, COALESCE(rs.current_page, 0) AS current_page, rs.session_id AS active_session_id, CASE WHEN b.total_pages > 0 THEN ROUND(COALESCE(rs.current_page, 0)::numeric * 100 / b.total_pages, 2) ELSE 0 END AS progress_percent").
+	if err := h.db.Table("user_books AS ub").Select("ub.user_book_id, b.book_id, b.title, b.author, b.category_name, b.cover_url, b.total_pages, ub.status, ub.is_favorite, COALESCE(rs.current_page, CASE WHEN ub.status = 'COMPLETED' THEN b.total_pages ELSE 0 END) AS current_page, rs.session_id AS active_session_id, CASE WHEN b.total_pages > 0 THEN ROUND(COALESCE(rs.current_page, CASE WHEN ub.status = 'COMPLETED' THEN b.total_pages ELSE 0 END)::numeric * 100 / b.total_pages, 2) ELSE 0 END AS progress_percent").
 		Joins("JOIN books AS b ON b.book_id = ub.book_id").Joins("LEFT JOIN reading_sessions AS rs ON rs.user_book_id = ub.user_book_id AND rs.status = ?", statusReading).
 		Where("ub.user_id = ? AND ub.status = ?", userID, statusReading).Order("ub.added_at DESC").Limit(5).Scan(&reading).Error; err != nil {
 		return apiError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load current reading books", nil)
@@ -365,8 +366,8 @@ func buildGoal(userID uint64, req GoalRequest) (models.ReadingGoal, string) {
 }
 
 func validateGoal(goal models.ReadingGoal) string {
-	if goal.GoalName == "" {
-		return "goal_name is required"
+	if strings.TrimSpace(goal.GoalName) == "" || utf8.RuneCountInString(goal.GoalName) > 255 {
+		return "goal_name must contain 1 to 255 characters"
 	}
 	if goal.GoalType != "BOOKS" && goal.GoalType != "PAGES" {
 		return "goal_type must be BOOKS or PAGES"

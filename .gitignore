@@ -27,6 +27,7 @@ go.work.sum
 
 # env file
 .env
+/uploads/
 
 # Local SQLite database files
 *.db

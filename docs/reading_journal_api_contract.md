@@ -71,7 +71,7 @@
 2. Nếu sách mới, Backend tạo bản ghi `books` (nếu hợp lệ) rồi tạo `user_books` cho người dùng trong **một transaction**.
 3. `user_books` mặc định `WANT_TO_READ`, `is_favorite=false`.
 4. Không được thêm trùng cùng `book_id` vào thư viện của cùng một người.
-5. Ảnh bìa: lưu **đường dẫn** `cover_url`, không lưu file ảnh nhị phân trong bảng `books`. Việc upload file ảnh là chức năng riêng, chưa nằm trong schema.
+5. Ảnh bìa: lưu **đường dẫn** `cover_url`, không lưu file ảnh nhị phân trong bảng `books`. Đã có API upload/thay/xóa ảnh bìa tại `/books/:book_id/cover`; file lưu trong `UPLOAD_DIR`, tên file nội bộ lưu ở `books.cover_file` và không trả trong JSON.
 6. **Đề xuất quyền riêng tư:** sách do người dùng tạo (`created_by`) chỉ chủ sở hữu sửa/xóa; cần chốt sách này có hiển thị trong tìm kiếm toàn hệ thống không.
 
 ### NV-03. Quản lý trạng thái sách
@@ -461,7 +461,7 @@ Số liệu trên là **ví dụ minh họa**, không phải dữ liệu thực 
 | Đọc lại tính vào mục tiêu BOOKS? | Không, chỉ đếm sách duy nhất | Tránh tăng số sách ảo |
 | Trang đã đọc được tính thế nào? | Cần chọn: cộng trang mỗi nhật ký hay đếm trang duy nhất | Tránh trùng khoảng trang |
 | Sách không có ảnh bìa? | `cover_url=null`, Flutter hiển thị ảnh mặc định | Không bắt buộc upload |
-| Có upload ảnh bìa từ thiết bị không? | Giai đoạn đầu dùng URL; upload để giai đoạn sau | Cần thêm xử lý file/storage |
+| Có upload ảnh bìa từ thiết bị không? | Đã có `POST /books/:book_id/cover`, multipart field `image` | JPEG/PNG/GIF, tối đa 5 MiB, chỉ chủ sách được tải lên; ảnh riêng tư cần Bearer token khi xem |
 | Có màn hình ghi chú riêng? | Nếu chưa có, hoãn API `book_notes` | Tập trung chức năng cốt lõi |
 | Có màn hình đánh giá riêng? | Nếu chưa có, hoãn API `reviews` | Tập trung chức năng cốt lõi |
 

@@ -34,6 +34,9 @@ func Register(e *echo.Echo, deps Dependencies) {
 	books.GET("/:book_id", deps.BookHandler.Get, deps.OptionalAuth)
 	books.POST("", deps.BookHandler.Create, deps.AuthMiddleware)
 	books.PATCH("/:book_id", deps.BookHandler.Update, deps.AuthMiddleware)
+	books.POST("/:book_id/cover", deps.BookHandler.UploadCover, deps.AuthMiddleware)
+	books.GET("/:book_id/cover", deps.BookHandler.GetCover, deps.OptionalAuth)
+	books.DELETE("/:book_id/cover", deps.BookHandler.DeleteCover, deps.AuthMiddleware)
 
 	meBooks := api.Group("/me/books", deps.AuthMiddleware)
 	meBooks.GET("", deps.BookHandler.ListMine)

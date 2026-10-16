@@ -20,7 +20,8 @@ const (
 )
 
 type BookHandler struct {
-	db *gorm.DB
+	db        *gorm.DB
+	uploadDir string
 }
 
 type BookRequest struct {
@@ -62,7 +63,9 @@ type LibraryBook struct {
 	ProgressPercent float64 `json:"progress_percent"`
 }
 
-func NewBookHandler(db *gorm.DB) *BookHandler { return &BookHandler{db: db} }
+func NewBookHandler(db *gorm.DB, uploadDir string) *BookHandler {
+	return &BookHandler{db: db, uploadDir: uploadDir}
+}
 
 func (h *BookHandler) List(c echo.Context) error {
 	page, limit, err := parsePagination(c)
@@ -133,7 +136,7 @@ func (h *BookHandler) Update(c echo.Context) error {
 	}
 	var book models.Book
 	if err := h.db.First(&book, "book_id = ?", bookID).Error; err != nil {
-		return apiError(c, http.StatusNotFound, "NOT_FOUND", "Book not found", nil)
+		return lookupError(c, err, "Book not found", "Failed to load book")
 	}
 	if book.CreatedBy == nil || *book.CreatedBy != userID {
 		return apiError(c, http.StatusForbidden, "FORBIDDEN", "Only the creator can update this book", nil)
@@ -209,8 +212,44 @@ func (h *BookHandler) Update(c echo.Context) error {
 	if len(updates) == 0 {
 		return apiError(c, http.StatusBadRequest, "VALIDATION_ERROR", "At least one field is required", nil)
 	}
+	updatedBook := book
+	if req.Title != nil {
+		updatedBook.Title = strings.TrimSpace(*req.Title)
+	}
+	if req.Author != nil {
+		updatedBook.Author = strings.TrimSpace(*req.Author)
+	}
+	if req.CoverURL.Set {
+		updatedBook.CoverURL = nil
+		if !req.CoverURL.Null {
+			updatedBook.CoverURL = emptyToNil(&req.CoverURL.Value)
+		}
+	}
+	if req.Publisher.Set {
+		updatedBook.Publisher = nil
+		if !req.Publisher.Null {
+			updatedBook.Publisher = emptyToNil(&req.Publisher.Value)
+		}
+	}
+	if req.ISBN.Set {
+		updatedBook.ISBN = nil
+		if !req.ISBN.Null {
+			updatedBook.ISBN = emptyToNil(&req.ISBN.Value)
+		}
+	}
+	if message := validateBookFields(updatedBook); message != "" {
+		return apiError(c, http.StatusBadRequest, "VALIDATION_ERROR", message, nil)
+	}
+	// Clearing or replacing a cover URL also detaches its local file.
+	if req.CoverURL.Set && (updatedBook.CoverURL == nil || book.CoverURL == nil || *updatedBook.CoverURL != *book.CoverURL) {
+		updates["cover_file"] = nil
+	}
+	previousCover := copyCoverName(book.CoverFile)
 	if err := h.db.Model(&book).Updates(updates).Error; err != nil {
 		return apiError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update book", nil)
+	}
+	if _, detached := updates["cover_file"]; detached {
+		h.removeUnusedCover(c, previousCover)
 	}
 	if err := h.db.First(&book, "book_id = ?", bookID).Error; err != nil {
 		return apiError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to reload book", nil)
@@ -266,7 +305,7 @@ func (h *BookHandler) GetMine(c echo.Context) error {
 	}
 	item, err := h.findLibraryItem(userID, userBookID)
 	if err != nil {
-		return apiError(c, http.StatusNotFound, "NOT_FOUND", "Library book not found", nil)
+		return lookupError(c, err, "Library book not found", "Failed to load library book")
 	}
 	return apiSuccess(c, http.StatusOK, item)
 }
@@ -279,12 +318,12 @@ func (h *BookHandler) AddExisting(c echo.Context) error {
 	var req struct {
 		BookID uint64 `json:"book_id"`
 	}
-	if err := c.Bind(&req); err != nil || req.BookID == 0 {
+	if err := c.Bind(&req); err != nil || req.BookID == 0 || req.BookID > 1<<63-1 {
 		return apiError(c, http.StatusBadRequest, "VALIDATION_ERROR", "book_id is required", nil)
 	}
 	var book models.Book
 	if err := h.visibleBooks(c).Where("book_id = ?", req.BookID).First(&book).Error; err != nil {
-		return apiError(c, http.StatusNotFound, "NOT_FOUND", "Book not found", nil)
+		return lookupError(c, err, "Book not found", "Failed to load book")
 	}
 	userBook := models.UserBook{UserID: userID, BookID: req.BookID, Status: statusWantToRead}
 	if err := h.db.Create(&userBook).Error; err != nil {
@@ -438,7 +477,7 @@ func (h *BookHandler) hasRecordedPagesBeyond(bookID uint64, totalPages int) (boo
 
 func (h *BookHandler) libraryQuery(userID uint64) *gorm.DB {
 	return h.db.Table("user_books AS ub").
-		Select("ub.user_book_id, b.book_id, b.title, b.author, b.category_name, b.cover_url, b.total_pages, ub.status, ub.is_favorite, COALESCE(rs.current_page, 0) AS current_page, rs.session_id AS active_session_id, CASE WHEN b.total_pages > 0 THEN ROUND(COALESCE(rs.current_page, 0)::numeric * 100 / b.total_pages, 2) ELSE 0 END AS progress_percent").
+		Select("ub.user_book_id, b.book_id, b.title, b.author, b.category_name, b.cover_url, b.total_pages, ub.status, ub.is_favorite, COALESCE(rs.current_page, CASE WHEN ub.status = 'COMPLETED' THEN b.total_pages ELSE 0 END) AS current_page, rs.session_id AS active_session_id, CASE WHEN b.total_pages > 0 THEN ROUND(COALESCE(rs.current_page, CASE WHEN ub.status = 'COMPLETED' THEN b.total_pages ELSE 0 END)::numeric * 100 / b.total_pages, 2) ELSE 0 END AS progress_percent").
 		Joins("JOIN books AS b ON b.book_id = ub.book_id").
 		Joins("LEFT JOIN reading_sessions AS rs ON rs.user_book_id = ub.user_book_id AND rs.status = ?", statusReading).
 		Where("ub.user_id = ?", userID)
@@ -467,7 +506,7 @@ func makeBook(req BookRequest, createdBy *uint64) (models.Book, string) {
 	if req.CategoryName != nil && utf8.RuneCountInString(strings.TrimSpace(*req.CategoryName)) > 100 {
 		return models.Book{}, "category_name must be at most 100 characters"
 	}
-	return models.Book{
+	book := models.Book{
 		CategoryName:  emptyToNil(req.CategoryName),
 		Title:         title,
 		Author:        author,
@@ -478,7 +517,8 @@ func makeBook(req BookRequest, createdBy *uint64) (models.Book, string) {
 		PublishedYear: req.PublishedYear,
 		ISBN:          emptyToNil(req.ISBN),
 		CreatedBy:     createdBy,
-	}, ""
+	}
+	return book, validateBookFields(book)
 }
 
 func emptyToNil(value *string) *string {

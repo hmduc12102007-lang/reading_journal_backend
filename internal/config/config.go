@@ -11,6 +11,7 @@ type Config struct {
 	AppPort            string
 	DBConnectionString string
 	JWTSecret          string
+	UploadDir          string
 }
 
 func Load() Config {
@@ -21,6 +22,7 @@ func Load() Config {
 		AppPort:            getEnv("APP_PORT", "8080"),
 		DBConnectionString: getEnv("DB_CONNECTION_STRING", "postgres://postgres:postgres@localhost:5432/reading_journal?sslmode=disable"),
 		JWTSecret:          getEnv("JWT_SECRET", ""),
+		UploadDir:          getEnv("UPLOAD_DIR", "uploads/covers"),
 	}
 }
 

@@ -21,7 +21,7 @@ type SessionResponse struct {
 	SessionID     uint64       `json:"session_id"`
 	UserBookID    uint64       `json:"user_book_id"`
 	SessionNumber int          `json:"session_number"`
-	StartDate     models.Date `json:"start_date"`
+	StartDate     models.Date  `json:"start_date"`
 	EndDate       *models.Date `json:"end_date"`
 	CurrentPage   int          `json:"current_page"`
 	TotalPages    int          `json:"total_pages"`
@@ -30,10 +30,10 @@ type SessionResponse struct {
 }
 
 type CreateLogRequest struct {
-	SessionID uint64 `json:"session_id"`
-	ReadDate  string `json:"read_date"`
-	StartPage int    `json:"start_page"`
-	EndPage   int    `json:"end_page"`
+	SessionID uint64  `json:"session_id"`
+	ReadDate  string  `json:"read_date"`
+	StartPage int     `json:"start_page"`
+	EndPage   int     `json:"end_page"`
 	Content   *string `json:"content"`
 }
 
@@ -214,6 +214,12 @@ func (h *ReadingHandler) CompleteSession(c echo.Context) error {
 	}
 	var response SessionResponse
 	err = h.db.Transaction(func(tx *gorm.DB) error {
+		// Match StartSession/RemoveFromLibrary lock order: library book, then session.
+		var userBook models.UserBook
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ? AND user_book_id = (?)", userID,
+			tx.Model(&models.ReadingSession{}).Select("user_book_id").Where("session_id = ?", sessionID)).First(&userBook).Error; err != nil {
+			return err
+		}
 		var session models.ReadingSession
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("session_id = ? AND user_book_id IN (?)", sessionID,
@@ -227,11 +233,11 @@ func (h *ReadingHandler) CompleteSession(c echo.Context) error {
 		if endDate.Before(session.StartDate.Time) {
 			return errSessionDateInvalid
 		}
-		var userBook models.UserBook
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&userBook, "user_book_id = ?", session.UserBookID).Error; err != nil {
+		var book models.Book
+		if err := tx.First(&book, "book_id = ?", userBook.BookID).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&session).Updates(map[string]interface{}{"status": statusCompleted, "end_date": endDate}).Error; err != nil {
+		if err := tx.Model(&session).Updates(map[string]interface{}{"status": statusCompleted, "end_date": endDate, "current_page": book.TotalPages}).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(&userBook).Update("status", statusCompleted).Error; err != nil {
@@ -239,10 +245,7 @@ func (h *ReadingHandler) CompleteSession(c echo.Context) error {
 		}
 		session.Status = statusCompleted
 		session.EndDate = &endDate
-		var book models.Book
-		if err := tx.First(&book, "book_id = ?", userBook.BookID).Error; err != nil {
-			return err
-		}
+		session.CurrentPage = book.TotalPages
 		response = makeSessionResponse(session, book.TotalPages)
 		return nil
 	})
@@ -328,7 +331,7 @@ func (h *ReadingHandler) CreateLog(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return apiError(c, http.StatusBadRequest, "VALIDATION_ERROR", "Invalid request body", nil)
 	}
-	if req.SessionID == 0 {
+	if req.SessionID == 0 || req.SessionID > 1<<63-1 {
 		return apiError(c, http.StatusBadRequest, "VALIDATION_ERROR", "session_id is required", nil)
 	}
 	readDate, err := parseDate(req.ReadDate)
@@ -413,7 +416,10 @@ func (h *ReadingHandler) UpdateLog(c echo.Context) error {
 		log.ReadDate = models.NewDate(readDate)
 	}
 	if req.Content.Set {
-		log.Content = emptyToNil(&req.Content.Value)
+		log.Content = nil
+		if !req.Content.Null {
+			log.Content = emptyToNil(&req.Content.Value)
+		}
 	}
 	return apiSuccess(c, http.StatusOK, log)
 }

@@ -57,7 +57,7 @@ func apiError(c echo.Context, status int, code, message string, details interfac
 }
 
 func parseID(value string) (uint64, error) {
-	id, err := strconv.ParseUint(value, 10, 64)
+	id, err := strconv.ParseUint(value, 10, 63)
 	if err != nil || id == 0 {
 		return 0, fmt.Errorf("invalid id")
 	}
@@ -81,6 +81,9 @@ func parsePagination(c echo.Context) (int, int, error) {
 	}
 	if limit > 100 {
 		limit = 100
+	}
+	if page-1 > int(^uint(0)>>1)/limit {
+		return 0, 0, fmt.Errorf("page is too large")
 	}
 	return page, limit, nil
 }

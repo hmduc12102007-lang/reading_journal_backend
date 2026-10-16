@@ -59,7 +59,7 @@ func Middleware(db *gorm.DB, secret string) echo.MiddlewareFunc {
 					return nil, errors.New("unexpected signing algorithm")
 				}
 				return []byte(secret), nil
-			}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithIssuer(tokenIssuer))
+			}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithIssuer(tokenIssuer), jwt.WithExpirationRequired())
 			if err != nil || token == nil || !token.Valid || claims.UserID == 0 {
 				return unauthorized(c, "Invalid or expired token")
 			}

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Reading Journal API
-  version: 1.0.0
+  version: 1.1.0
   description: |-
     API for the Reading Journal Flutter application. Import this OpenAPI file into Apidog.
     Business routes are under /api/v1; GET /health is at the server root. Dates use YYYY-MM-DD and timestamps use ISO 8601.
@@ -271,6 +271,76 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '500': {$ref: '#/components/responses/ServerError'}
+  /books/{book_id}/cover:
+    parameters:
+      - {$ref: '#/components/parameters/BookID'}
+    post:
+      tags: [Books]
+      operationId: uploadBookCover
+      summary: Upload or replace the cover of a book owned by the caller
+      description: |-
+        Send exactly one file named image. JPEG, PNG, and GIF are supported, up to 5 MiB
+        and 20 million pixels. The actual image content is validated. Returns the updated
+        book with a server-relative cover_url such as /api/v1/books/1/cover.
+        Resolve that URL against the server origin, and send a Bearer token when fetching
+        private covers. Local storage filenames are never included in responses.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image: {type: string, format: binary}
+      responses:
+        '200':
+          description: Updated book with its uploaded cover URL
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BookEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413':
+          description: Image exceeds 5 MiB or multipart request exceeds 6 MiB
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '500': {$ref: '#/components/responses/ServerError'}
+    get:
+      tags: [Books]
+      operationId: getBookCover
+      summary: Fetch uploaded image bytes with the same visibility rules as the book
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        '200':
+          description: Uploaded image; Cache-Control is private, no-store
+          content:
+            image/jpeg:
+              schema: {type: string, format: binary}
+            image/png:
+              schema: {type: string, format: binary}
+            image/gif:
+              schema: {type: string, format: binary}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/ServerError'}
+    delete:
+      tags: [Books]
+      operationId: deleteBookCover
+      summary: Clear a cover and delete its local image file if unused
+      description: Only the creator can clear a cover. Repeated deletion succeeds. A missing or inaccessible book returns 404.
+      responses:
+        '204': {description: Cover cleared}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/ServerError'}
   /me/books:
     get:
       tags: [My Library]
@@ -476,6 +546,7 @@ paths:
       tags: [Reading Sessions]
       operationId: completeReadingSession
       summary: Complete a reading session
+      description: Sets current_page to total_pages, records end_date, and marks the session and library book COMPLETED. Library progress becomes 100 percent.
       requestBody:
         required: false
         content:
@@ -953,7 +1024,7 @@ components:
         category_name: {type: string, maxLength: 100, nullable: true}
         author: {type: string, minLength: 1, maxLength: 255}
         total_pages: {type: integer, minimum: 1}
-        cover_url: {type: string, format: uri, nullable: true}
+        cover_url: {type: string, format: uri-reference, nullable: true, description: 'Absolute external HTTP(S) URL or server-relative uploaded cover URL'}
         description: {type: string}
         publisher: {type: string, nullable: true}
         published_year: {type: integer, nullable: true}
@@ -964,14 +1035,14 @@ components:
       description: Send null to clear nullable fields. Empty strings also clear nullable text fields.
       properties:
         category_name: {type: string, maxLength: 100, nullable: true}
-        title: {type: string, minLength: 1}
-        author: {type: string}
+        title: {type: string, minLength: 1, maxLength: 255}
+        author: {type: string, minLength: 1, maxLength: 255}
         total_pages: {type: integer, minimum: 1}
-        cover_url: {type: string, nullable: true}
+        cover_url: {type: string, maxLength: 2048, nullable: true, description: 'Absolute HTTP(S) URL, null to clear, or the unchanged uploaded URL'}
         description: {type: string}
-        publisher: {type: string, nullable: true}
+        publisher: {type: string, maxLength: 255, nullable: true}
         published_year: {type: integer, nullable: true}
-        isbn: {type: string, nullable: true}
+        isbn: {type: string, maxLength: 32, nullable: true}
     Book:
       allOf:
         - $ref: '#/components/schemas/BookRequest'

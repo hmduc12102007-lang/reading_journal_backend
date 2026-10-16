@@ -10,6 +10,7 @@ type Book struct {
 	Description   string    `json:"description" gorm:"type:text"`
 	TotalPages    int       `json:"total_pages" gorm:"not null"`
 	CoverURL      *string   `json:"cover_url" gorm:"size:2048"`
+	CoverFile     *string   `json:"-" gorm:"size:255"`
 	Publisher     *string   `json:"publisher" gorm:"size:255"`
 	PublishedYear *int      `json:"published_year"`
 	ISBN          *string   `json:"isbn" gorm:"size:32;index"`

@@ -21,9 +21,9 @@ func NewNotesReviewsHandler(db *gorm.DB) *NotesReviewsHandler {
 }
 
 func (h *NotesReviewsHandler) ListNotes(c echo.Context) error {
-	userID, userBookID, ok := h.ownedUserBook(c)
-	if !ok {
-		return apiError(c, http.StatusNotFound, "NOT_FOUND", "Library book not found", nil)
+	userID, userBookID, err := h.ownedUserBook(c)
+	if err != nil {
+		return lookupError(c, err, "Library book not found", "Failed to load library book")
 	}
 	notes := make([]models.BookNote, 0)
 	if err := h.db.Where("user_book_id = ?", userBookID).Order("created_at DESC").Find(&notes).Error; err != nil {
@@ -34,9 +34,9 @@ func (h *NotesReviewsHandler) ListNotes(c echo.Context) error {
 }
 
 func (h *NotesReviewsHandler) CreateNote(c echo.Context) error {
-	userID, userBookID, ok := h.ownedUserBook(c)
-	if !ok {
-		return apiError(c, http.StatusNotFound, "NOT_FOUND", "Library book not found", nil)
+	userID, userBookID, err := h.ownedUserBook(c)
+	if err != nil {
+		return lookupError(c, err, "Library book not found", "Failed to load library book")
 	}
 	var req struct {
 		PageNumber *int   `json:"page_number"`
@@ -76,7 +76,10 @@ func (h *NotesReviewsHandler) UpdateNote(c echo.Context) error {
 		return apiError(c, http.StatusBadRequest, "VALIDATION_ERROR", "note_id must be a positive integer", nil)
 	}
 	var note models.BookNote
-	if err := h.db.Table("book_notes AS n").Select("n.*").Joins("JOIN user_books AS ub ON ub.user_book_id = n.user_book_id").Where("n.note_id = ? AND ub.user_id = ?", noteID, userID).Scan(&note).Error; err != nil || note.NoteID == 0 {
+	if err := h.db.Table("book_notes AS n").Select("n.*").Joins("JOIN user_books AS ub ON ub.user_book_id = n.user_book_id").Where("n.note_id = ? AND ub.user_id = ?", noteID, userID).Scan(&note).Error; err != nil {
+		return lookupError(c, err, "Note not found", "Failed to load note")
+	}
+	if note.NoteID == 0 {
 		return apiError(c, http.StatusNotFound, "NOT_FOUND", "Note not found", nil)
 	}
 	var req struct {
@@ -144,12 +147,12 @@ func (h *NotesReviewsHandler) DeleteNote(c echo.Context) error {
 }
 
 func (h *NotesReviewsHandler) GetReview(c echo.Context) error {
-	userID, userBookID, ok := h.ownedUserBook(c)
-	if !ok {
-		return apiError(c, http.StatusNotFound, "NOT_FOUND", "Library book not found", nil)
+	userID, userBookID, err := h.ownedUserBook(c)
+	if err != nil {
+		return lookupError(c, err, "Library book not found", "Failed to load library book")
 	}
 	var review models.Review
-	err := h.db.Where("user_book_id = ?", userBookID).First(&review).Error
+	err = h.db.Where("user_book_id = ?", userBookID).First(&review).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return apiSuccess(c, http.StatusOK, nil)
 	}
@@ -161,9 +164,9 @@ func (h *NotesReviewsHandler) GetReview(c echo.Context) error {
 }
 
 func (h *NotesReviewsHandler) UpsertReview(c echo.Context) error {
-	userID, userBookID, ok := h.ownedUserBook(c)
-	if !ok {
-		return apiError(c, http.StatusNotFound, "NOT_FOUND", "Library book not found", nil)
+	userID, userBookID, err := h.ownedUserBook(c)
+	if err != nil {
+		return lookupError(c, err, "Library book not found", "Failed to load library book")
 	}
 	var req struct {
 		Rating  int     `json:"rating"`
@@ -176,7 +179,7 @@ func (h *NotesReviewsHandler) UpsertReview(c echo.Context) error {
 		return apiError(c, http.StatusBadRequest, "VALIDATION_ERROR", "rating must be between 1 and 5", nil)
 	}
 	review := models.Review{UserBookID: userBookID, Rating: req.Rating, Comment: emptyToNil(req.Comment)}
-	err := h.db.Clauses(clause.OnConflict{
+	err = h.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_book_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"rating", "comment", "updated_at"}),
 	}).Create(&review).Error
@@ -191,9 +194,9 @@ func (h *NotesReviewsHandler) UpsertReview(c echo.Context) error {
 }
 
 func (h *NotesReviewsHandler) DeleteReview(c echo.Context) error {
-	userID, userBookID, ok := h.ownedUserBook(c)
-	if !ok {
-		return apiError(c, http.StatusNotFound, "NOT_FOUND", "Library book not found", nil)
+	userID, userBookID, err := h.ownedUserBook(c)
+	if err != nil {
+		return lookupError(c, err, "Library book not found", "Failed to load library book")
 	}
 	result := h.db.Where("user_book_id = ?", userBookID).Delete(&models.Review{})
 	if result.Error != nil {
@@ -206,16 +209,22 @@ func (h *NotesReviewsHandler) DeleteReview(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (h *NotesReviewsHandler) ownedUserBook(c echo.Context) (uint64, uint64, bool) {
+func (h *NotesReviewsHandler) ownedUserBook(c echo.Context) (uint64, uint64, error) {
 	userID, ok := currentUserID(c)
 	if !ok {
-		return 0, 0, false
+		return 0, 0, echo.NewHTTPError(http.StatusUnauthorized)
 	}
 	userBookID, err := parseID(c.Param("user_book_id"))
 	if err != nil {
-		return userID, 0, false
+		return userID, 0, echo.NewHTTPError(http.StatusBadRequest)
 	}
 	var count int64
 	err = h.db.Model(&models.UserBook{}).Where("user_book_id = ? AND user_id = ?", userBookID, userID).Count(&count).Error
-	return userID, userBookID, err == nil && count == 1
+	if err != nil {
+		return userID, userBookID, err
+	}
+	if count != 1 {
+		return userID, userBookID, gorm.ErrRecordNotFound
+	}
+	return userID, userBookID, nil
 }

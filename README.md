@@ -47,6 +47,57 @@ All successful JSON responses use a `success: true` envelope. Errors use `succes
 - `BOOKS` goals count distinct books completed in the goal date range.
 - `PAGES` goals and page statistics sum logged page ranges, including overlaps and rereads.
 - Empty nullable values in PATCH requests can be cleared with `null`; nullable text can also be cleared with an empty string.
+- Completing a session sets its current page to the book's total pages. Completed library books display 100% progress; starting a reread resets the active session's progress.
+
+## Book Cover Uploads
+
+Create a book first, then upload its cover with the returned **book_id** (not user_book_id).
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| POST | `/api/v1/books/{book_id}/cover` | Upload or replace a cover; requires the creator's Bearer token |
+| GET | `/api/v1/books/{book_id}/cover` | Fetch image bytes; private books require the creator's Bearer token |
+| DELETE | `/api/v1/books/{book_id}/cover` | Clear the cover, including an external URL; requires the creator's Bearer token |
+
+POST accepts `multipart/form-data` with exactly one file field named `image`. Supported formats are JPEG, PNG, and GIF, up to **5 MiB** and **20 million pixels**. Images are checked by their actual contents; a filename or MIME header alone is not trusted. The request body limit is 6 MiB, including multipart overhead. Corrupt images return 400; oversized uploads return 413. Other API requests also have a 6 MiB body limit.
+
+Windows example (replace the token, book ID, and file path):
+
+```powershell
+curl.exe -X POST "http://localhost:8080/api/v1/books/1/cover" -H "Authorization: Bearer YOUR_TOKEN" -F "image=@C:/Pictures/cover.jpg"
+```
+
+The upload returns the normal book response with `cover_url: "/api/v1/books/1/cover"`. Flutter must resolve relative URLs against the server origin and include the Bearer token when displaying a private uploaded cover:
+
+```dart
+final imageUri = Uri.parse(serverOrigin).resolve(book.coverUrl!);
+Image.network(
+  imageUri.toString(),
+  headers: {'Authorization': 'Bearer $accessToken'},
+);
+```
+
+Here `serverOrigin` is, for example, `http://10.0.2.2:8080`. Only attach your access token to images served by your backend; external HTTP(S) cover URLs do not need that token. A missing cover should display a placeholder. The local GET endpoint returns 404 for a book using an external cover URL; display that external URL directly.
+
+`UPLOAD_DIR` defaults to `uploads/covers`. The server creates it on startup, stores random filenames there, and records an internal `books.cover_file` value through AutoMigrate. Filenames are hidden from JSON responses. Replacing/deleting a cover or clearing/replacing its URL removes the unused local file. Changing the URL to the same uploaded URL preserves its file. Files are served through permission checks; there is no public static uploads directory.
+
+For deployment, mount `UPLOAD_DIR` on persistent writable storage and back it up together with PostgreSQL. All server instances must use the same storage directory if you run multiple instances. Restarts must preserve this directory. Avatar upload is outside the current API contract and has not been added.
+
+## Verification
+
+```powershell
+go test ./...
+go vet ./...
+```
+
+Unit tests validate image contents, corrupt files, pixel limits, path traversal, invalid cover URLs, and pagination overflow. To also run the API integration test, set `TEST_DATABASE_URL` to a PostgreSQL URL for a **test server** whose account can create schemas:
+
+```powershell
+$env:TEST_DATABASE_URL='postgres://test_user:test_password@localhost:5432/test_database?sslmode=disable'
+go test ./... -count=1
+```
+
+The integration test creates a random schema, migrates and exercises the APIs there, and drops only that test schema. It covers authentication, cross-user access, cover upload/replacement/deletion, reading sessions, notes, reviews, goals, and password token revocation. Without `TEST_DATABASE_URL`, this test is skipped.
 
 ## Project Structure
 
