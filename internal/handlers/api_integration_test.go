@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -24,6 +25,8 @@ import (
 	"reading_journal_backend/internal/routes"
 
 	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+	"gorm.io/gorm"
 )
 
 // All DDL and fixtures are confined to a fresh, randomly named schema.
@@ -81,6 +84,7 @@ func TestAPIIntegration(t *testing.T) {
 	storage := t.TempDir()
 	secret := strings.Repeat("test-secret-", 4)
 	e := echo.New()
+	e.Use(middleware.BodyLimit("6M"))
 	routes.Register(e, routes.Dependencies{
 		AuthHandler: handlers.NewAuthHandler(db, secret), BookHandler: handlers.NewBookHandler(db, storage),
 		ReadingHandler: handlers.NewReadingHandler(db), NotesReviewsHandler: handlers.NewNotesReviewsHandler(db),
@@ -167,6 +171,66 @@ func TestAPIIntegration(t *testing.T) {
 	upload(other, imageBytes.Bytes(), 404)
 	upload(owner, []byte("fake image"), 400)
 	upload(owner, make([]byte, (5<<20)+1), 413)
+	// Exercise malformed requests and a streamed oversized body through BodyLimit.
+	for _, tc := range []struct {
+		name, field      string
+		fileCount        int
+		streamedOversize bool
+		status           int
+	}{
+		{"missing file", "image", 0, false, 400},
+		{"wrong field", "file", 1, false, 400},
+		{"multiple images", "image", 2, false, 400},
+		{"streamed oversized request", "image", 1, true, 413},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			for i := 0; i < tc.fileCount; i++ {
+				part, err := writer.CreateFormFile(tc.field, "cover.png")
+				if err != nil {
+					t.Fatal(err)
+				}
+				data := imageBytes.Bytes()
+				if tc.streamedOversize {
+					data = make([]byte, (6<<20)+1)
+				}
+				if _, err := part.Write(data); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest("POST", "/api/v1"+coverPath, &body)
+			if tc.streamedOversize {
+				req.ContentLength = -1
+			}
+			req.Header.Set("Content-Type", writer.FormDataContentType())
+			req.Header.Set("Authorization", "Bearer "+owner)
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, req)
+			if rec.Code != tc.status {
+				t.Fatalf("got %d, want %d: %s", rec.Code, tc.status, rec.Body.String())
+			}
+		})
+	}
+	// A failed database update must leave neither an uploaded file nor changed metadata.
+	if err := db.Callback().Update().Before("gorm:update").Register("test:fail_cover_update", func(tx *gorm.DB) {
+		if tx.Statement.Table == "books" {
+			tx.AddError(errors.New("simulated database failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	upload(owner, imageBytes.Bytes(), 500)
+	if err := db.Callback().Update().Remove("test:fail_cover_update"); err != nil {
+		t.Fatal(err)
+	}
+	failedFiles, err := os.ReadDir(storage)
+	if err != nil || len(failedFiles) != 0 {
+		t.Fatal("failed database update leaked an image file")
+	}
 	upload(owner, imageBytes.Bytes(), 200)
 	var book models.Book
 	if err := db.First(&book, "book_id = ?", library.BookID).Error; err != nil {

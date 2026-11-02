@@ -240,20 +240,40 @@ func (h *BookHandler) Update(c echo.Context) error {
 	if message := validateBookFields(updatedBook); message != "" {
 		return apiError(c, http.StatusBadRequest, "VALIDATION_ERROR", message, nil)
 	}
-	// Clearing or replacing a cover URL also detaches its local file.
-	if req.CoverURL.Set && (updatedBook.CoverURL == nil || book.CoverURL == nil || *updatedBook.CoverURL != *book.CoverURL) {
-		updates["cover_file"] = nil
+	var previousCover *string
+	var coverValidationMessage string
+	errCoverChanged := errors.New("cover changed while updating book")
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		var current models.Book
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, "book_id = ? AND created_by = ?", bookID, userID).Error; err != nil {
+			return err
+		}
+		if req.CoverURL.Set {
+			// Re-read under the same lock as upload/delete, so a concurrent upload's
+			// filename is detached and cleaned up rather than leaving an orphan.
+			validationBook := current
+			validationBook.CoverURL = updatedBook.CoverURL
+			if message := validateBookFields(validationBook); message != "" {
+				coverValidationMessage = message
+				return errCoverChanged
+			}
+			if updatedBook.CoverURL == nil || current.CoverURL == nil || *updatedBook.CoverURL != *current.CoverURL {
+				previousCover = copyCoverName(current.CoverFile)
+				updates["cover_file"] = nil
+			}
+		}
+		if err := tx.Model(&current).Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.First(&book, "book_id = ?", bookID).Error
+	})
+	if errors.Is(err, errCoverChanged) {
+		return apiError(c, http.StatusBadRequest, "VALIDATION_ERROR", coverValidationMessage, nil)
 	}
-	previousCover := copyCoverName(book.CoverFile)
-	if err := h.db.Model(&book).Updates(updates).Error; err != nil {
-		return apiError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update book", nil)
+	if err != nil {
+		return lookupError(c, err, "Book not found", "Failed to update book")
 	}
-	if _, detached := updates["cover_file"]; detached {
-		h.removeUnusedCover(c, previousCover)
-	}
-	if err := h.db.First(&book, "book_id = ?", bookID).Error; err != nil {
-		return apiError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to reload book", nil)
-	}
+	h.removeUnusedCover(c, previousCover)
 	return apiSuccess(c, http.StatusOK, book)
 }
 

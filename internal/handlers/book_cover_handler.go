@@ -11,6 +11,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -72,7 +73,9 @@ func (h *BookHandler) UploadCover(c echo.Context) error {
 	}
 	if err != nil {
 		var sizeError *http.MaxBytesError
-		if errors.As(err, &sizeError) {
+		var httpError *echo.HTTPError
+		if errors.As(err, &sizeError) || errors.Is(err, multipart.ErrMessageTooLarge) ||
+			(errors.As(err, &httpError) && httpError.Code == http.StatusRequestEntityTooLarge) {
 			return apiError(c, 413, "PAYLOAD_TOO_LARGE", "Image must be at most 5 MiB", nil)
 		}
 		return apiError(c, 400, "VALIDATION_ERROR", "Send multipart/form-data with one file field named image", nil)
